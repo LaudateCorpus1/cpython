@@ -28,6 +28,7 @@ from datetime import timedelta
 from datetime import tzinfo
 from datetime import time
 from datetime import timezone
+from datetime import UTC
 from datetime import date, datetime
 import time as _time
 
@@ -66,6 +67,9 @@ class TestModule(unittest.TestCase):
         self.assertEqual(datetime.MINYEAR, 1)
         self.assertEqual(datetime.MAXYEAR, 9999)
 
+    def test_utc_alias(self):
+        self.assertIs(UTC, timezone.utc)
+
     def test_all(self):
         """Test that __all__ only points to valid attributes."""
         all_attrs = dir(datetime_module)
@@ -81,7 +85,7 @@ class TestModule(unittest.TestCase):
                     if not name.startswith('__') and not name.endswith('__'))
         allowed = set(['MAXYEAR', 'MINYEAR', 'date', 'datetime',
                        'datetime_CAPI', 'time', 'timedelta', 'timezone',
-                       'tzinfo', 'sys'])
+                       'tzinfo', 'UTC', 'sys'])
         self.assertEqual(names - allowed, set([]))
 
     def test_divide_and_round(self):
@@ -139,8 +143,8 @@ class PicklableFixedOffset(FixedOffset):
     def __init__(self, offset=None, name=None, dstoffset=None):
         FixedOffset.__init__(self, offset, name, dstoffset)
 
-    def __getstate__(self):
-        return self.__dict__
+class PicklableFixedOffsetWithSlots(PicklableFixedOffset):
+    __slots__ = '_FixedOffset__offset', '_FixedOffset__name', 'spam'
 
 class _TZInfo(tzinfo):
     def utcoffset(self, datetime_module):
@@ -202,6 +206,7 @@ class TestTZInfo(unittest.TestCase):
         offset = timedelta(minutes=-300)
         for otype, args in [
             (PicklableFixedOffset, (offset, 'cookie')),
+            (PicklableFixedOffsetWithSlots, (offset, 'cookie')),
             (timezone, (offset,)),
             (timezone, (offset, "EST"))]:
             orig = otype(*args)
@@ -217,6 +222,7 @@ class TestTZInfo(unittest.TestCase):
                 self.assertIs(type(derived), otype)
                 self.assertEqual(derived.utcoffset(None), offset)
                 self.assertEqual(derived.tzname(None), oname)
+                self.assertFalse(hasattr(derived, 'spam'))
 
     def test_issue23600(self):
         DSTDIFF = DSTOFFSET = timedelta(hours=1)
@@ -308,6 +314,7 @@ class TestTimeZone(unittest.TestCase):
 
     def test_tzname(self):
         self.assertEqual('UTC', timezone.utc.tzname(None))
+        self.assertEqual('UTC', UTC.tzname(None))
         self.assertEqual('UTC', timezone(ZERO).tzname(None))
         self.assertEqual('UTC-05:00', timezone(-5 * HOUR).tzname(None))
         self.assertEqual('UTC+09:30', timezone(9.5 * HOUR).tzname(None))
@@ -1676,7 +1683,8 @@ class TestDate(HarmlessMixedComparison, unittest.TestCase):
                 # Year 42 returns '42', not padded
                 self.assertEqual(d.strftime("%Y"), '%d' % y)
                 # '0042' is obtained anyway
-                self.assertEqual(d.strftime("%4Y"), '%04d' % y)
+                if support.has_strftime_extensions:
+                    self.assertEqual(d.strftime("%4Y"), '%04d' % y)
 
     def test_replace(self):
         cls = self.theclass
@@ -1864,8 +1872,6 @@ class TestDate(HarmlessMixedComparison, unittest.TestCase):
 
     def test_fromisoformat_fails_typeerror(self):
         # Test that fromisoformat fails when passed the wrong type
-        import io
-
         bad_types = [b'2009-03-01', None, io.StringIO('2009-03-01')]
         for bad_type in bad_types:
             with self.assertRaises(TypeError):
@@ -3988,8 +3994,6 @@ class TestTimeTZ(TestTime, TZInfoBase, unittest.TestCase):
 
     def test_fromisoformat_fails_typeerror(self):
         # Test the fromisoformat fails when passed the wrong type
-        import io
-
         bad_types = [b'12:30:45', None, io.StringIO('12:30:45')]
 
         for bad_type in bad_types:
@@ -5859,6 +5863,9 @@ class ZoneInfoTest(unittest.TestCase):
                 ldt = tz.fromutc(udt.replace(tzinfo=tz))
                 self.assertEqual(ldt.fold, 0)
 
+    @unittest.skipUnless(
+        hasattr(time, "tzset"), "time module has no attribute tzset"
+    )
     def test_system_transitions(self):
         if ('Riyadh8' in self.zonename or
             # From tzdata NEWS file:

@@ -17,10 +17,12 @@ import sysconfig
 import tempfile
 import textwrap
 
+if not support.has_subprocess_support:
+    raise unittest.SkipTest("test module requires subprocess")
 
 MS_WINDOWS = (os.name == 'nt')
 MACOS = (sys.platform == 'darwin')
-
+Py_DEBUG = hasattr(sys, 'gettotalrefcount')
 PYMEM_ALLOCATOR_NOT_SET = 0
 PYMEM_ALLOCATOR_DEBUG = 2
 PYMEM_ALLOCATOR_MALLOC = 3
@@ -32,7 +34,7 @@ API_PYTHON = 2
 # _PyCoreConfig_InitIsolatedConfig()
 API_ISOLATED = 3
 
-INIT_LOOPS = 16
+INIT_LOOPS = 4
 MAX_HASH_SEED = 4294967295
 
 
@@ -329,6 +331,37 @@ class EmbeddingTests(EmbeddingTestsMixin, unittest.TestCase):
         self.assertEqual(out, "Py_RunMain(): sys.argv=['-c', 'arg2']\n" * nloop)
         self.assertEqual(err, '')
 
+    def test_finalize_structseq(self):
+        # bpo-46417: Py_Finalize() clears structseq static types. Check that
+        # sys attributes using struct types still work when
+        # Py_Finalize()/Py_Initialize() is called multiple times.
+        # print() calls type->tp_repr(instance) and so checks that the types
+        # are still working properly.
+        script = support.findfile('_test_embed_structseq.py')
+        with open(script, encoding="utf-8") as fp:
+            code = fp.read()
+        out, err = self.run_embedded_interpreter("test_repeated_init_exec", code)
+        self.assertEqual(out, 'Tests passed\n' * INIT_LOOPS)
+
+    @support.skip_if_pgo_task
+    def test_quickened_static_code_gets_unquickened_at_Py_FINALIZE(self):
+        # https://github.com/python/cpython/issues/92031
+        code = """if 1:
+            from importlib._bootstrap import _handle_fromlist
+            import dis
+            for name in dis.opmap:
+                # quicken this frozen code object.
+                _handle_fromlist(dis, [name], lambda *args: None)
+        """
+        run = self.run_embedded_interpreter
+        for i in range(50):
+            out, err = run("test_repeated_init_exec", code, timeout=60)
+
+    def test_ucnhash_capi_reset(self):
+        # bpo-47182: unicodeobject.c:ucnhash_capi was not reset on shutdown.
+        code = "print('\\N{digit nine}')"
+        out, err = self.run_embedded_interpreter("test_repeated_init_exec", code)
+        self.assertEqual(out, '9\n' * INIT_LOOPS)
 
 class InitConfigTests(EmbeddingTestsMixin, unittest.TestCase):
     maxDiff = 4096
@@ -445,7 +478,7 @@ class InitConfigTests(EmbeddingTestsMixin, unittest.TestCase):
         'pathconfig_warnings': 1,
         '_init_main': 1,
         '_isolated_interpreter': 0,
-        'use_frozen_modules': 1,
+        'use_frozen_modules': not Py_DEBUG,
         '_is_python_build': IGNORE_CONFIG,
     }
     if MS_WINDOWS:
@@ -1144,7 +1177,7 @@ class InitConfigTests(EmbeddingTestsMixin, unittest.TestCase):
              # The current getpath.c doesn't determine the stdlib dir
              # in this case.
             'stdlib_dir': '',
-            'use_frozen_modules': 1,
+            'use_frozen_modules': not Py_DEBUG,
             # overridden by PyConfig
             'program_name': 'conf_program_name',
             'base_executable': 'conf_executable',
@@ -1187,20 +1220,11 @@ class InitConfigTests(EmbeddingTestsMixin, unittest.TestCase):
 
             if MS_WINDOWS:
                 # Copy pythonXY.dll (or pythonXY_d.dll)
-                ver = sys.version_info
-                dll = f'python{ver.major}{ver.minor}'
-                dll3 = f'python{ver.major}'
-                if debug_build(sys.executable):
-                    dll += '_d'
-                    dll3 += '_d'
-                dll += '.dll'
-                dll3 += '.dll'
-                dll = os.path.join(os.path.dirname(self.test_exe), dll)
-                dll3 = os.path.join(os.path.dirname(self.test_exe), dll3)
-                dll_copy = os.path.join(tmpdir, os.path.basename(dll))
-                dll3_copy = os.path.join(tmpdir, os.path.basename(dll3))
-                shutil.copyfile(dll, dll_copy)
-                shutil.copyfile(dll3, dll3_copy)
+                import fnmatch
+                exedir = os.path.dirname(self.test_exe)
+                for f in os.listdir(exedir):
+                    if fnmatch.fnmatch(f, '*.dll'):
+                        shutil.copyfile(os.path.join(exedir, f), os.path.join(tmpdir, f))
 
             # Copy Python program
             exec_copy = os.path.join(tmpdir, os.path.basename(self.test_exe))
@@ -1392,17 +1416,45 @@ class InitConfigTests(EmbeddingTestsMixin, unittest.TestCase):
                 config['base_prefix'] = pyvenv_home
                 config['prefix'] = pyvenv_home
                 config['stdlib_dir'] = os.path.join(pyvenv_home, 'Lib')
-                config['use_frozen_modules'] = 1
+                config['use_frozen_modules'] = not Py_DEBUG
             else:
                 # cannot reliably assume stdlib_dir here because it
                 # depends too much on our build. But it ought to be found
                 config['stdlib_dir'] = self.IGNORE_CONFIG
-                config['use_frozen_modules'] = 1
+                config['use_frozen_modules'] = not Py_DEBUG
 
             env = self.copy_paths_by_env(config)
             self.check_all_configs("test_init_compat_config", config,
                                    api=API_COMPAT, env=env,
                                    ignore_stderr=True, cwd=tmpdir)
+
+    @unittest.skipUnless(MS_WINDOWS, 'specific to Windows')
+    def test_getpath_abspath_win32(self):
+        # Check _Py_abspath() is passed a backslashed path not to fall back to
+        # GetFullPathNameW() on startup, which (re-)normalizes the path overly.
+        # Currently, _Py_normpath() doesn't trim trailing dots and spaces.
+        CASES = [
+            ("C:/a. . .",  "C:\\a. . ."),
+            ("C:\\a. . .", "C:\\a. . ."),
+            ("\\\\?\\C:////a////b. . .", "\\\\?\\C:\\a\\b. . ."),
+            ("//a/b/c. . .", "\\\\a\\b\\c. . ."),
+            ("\\\\a\\b\\c. . .", "\\\\a\\b\\c. . ."),
+            ("a. . .", f"{os.getcwd()}\\a"),  # relpath gets fully normalized
+        ]
+        out, err = self.run_embedded_interpreter(
+            "test_init_initialize_config",
+            env={**remove_python_envvars(),
+                 "PYTHONPATH": os.path.pathsep.join(c[0] for c in CASES)}
+        )
+        self.assertEqual(err, "")
+        try:
+            out = json.loads(out)
+        except json.JSONDecodeError:
+            self.fail(f"fail to decode stdout: {out!r}")
+
+        results = out['config']["module_search_paths"]
+        for (_, expected), result in zip(CASES, results):
+            self.assertEqual(result, expected)
 
     def test_global_pathconfig(self):
         # Test C API functions getting the path configuration:
@@ -1598,6 +1650,34 @@ class MiscTests(EmbeddingTestsMixin, unittest.TestCase):
             config buffered_stdio: 0
         """).lstrip()
         self.assertEqual(out, expected)
+
+    @unittest.skipUnless(hasattr(sys, 'gettotalrefcount'),
+                         '-X showrefcount requires a Python debug build')
+    def test_no_memleak(self):
+        # bpo-1635741: Python must release all memory at exit
+        tests = (
+            ('off', 'pass'),
+            ('on', 'pass'),
+            ('off', 'import __hello__'),
+            ('on', 'import __hello__'),
+        )
+        for flag, stmt in tests:
+            xopt = f"frozen_modules={flag}"
+            cmd = [sys.executable, "-I", "-X", "showrefcount", "-X", xopt, "-c", stmt]
+            proc = subprocess.run(cmd,
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT,
+                                  text=True)
+            self.assertEqual(proc.returncode, 0)
+            out = proc.stdout.rstrip()
+            match = re.match(r'^\[(-?\d+) refs, (-?\d+) blocks\]', out)
+            if not match:
+                self.fail(f"unexpected output: {out!a}")
+            refs = int(match.group(1))
+            blocks = int(match.group(2))
+            with self.subTest(frozen_modules=flag, stmt=stmt):
+                self.assertEqual(refs, 0, out)
+                self.assertEqual(blocks, 0, out)
 
 
 class StdPrinterTests(EmbeddingTestsMixin, unittest.TestCase):
