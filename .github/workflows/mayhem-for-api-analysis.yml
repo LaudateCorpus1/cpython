@@ -52,6 +52,7 @@ jobs:
 
       - name: Mayhem for API
         uses: ForAllSecure/mapi-action@0a8ccdfba3fd49087338af093fed2ee533d542f4
+
         continue-on-error: true
         with:
           mapi-token: ${{ secrets.MAPI_TOKEN }}
