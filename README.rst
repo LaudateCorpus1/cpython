@@ -1,3 +1,22 @@
+https://cocalc.com/projects/8d99864c-17e8-4730-8033-db43851188c9/files/
+https://jupyter.org/try-jupyter/lab/?path=notebooks%2FIntro.ipynb
+https://deepnote.com/workspace/Laudate%20Corpus%20LLC-8121b640-33eb-4aa5-aade-46a63bb0bbfd?welcome-to-edu-plan=true
+https://app.hex.tech/1d3cf463-b53a-4c91-8d2f-b452ade62dad/settings/data-sources
+https://github.com/classicvalues/jinja/
+https://github.com/classicvalues/trender
+https://github.com/classicvalues/fmpp
+https://github.com/classicvalues/mako
+https://github.com/classicvalues/genshi
+https://github.com/classicvalues/Python-For-Kids
+https://github.com/classicvalues/awesome-programming-for-kids
+https://github.com/classicvalues/jupyter-book
+https://github.com/classicvalues/chameleon
+
+
+
+
+
+
 This is Python version 3.13.0 alpha 0
 =====================================
 
